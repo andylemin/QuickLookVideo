@@ -50,9 +50,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     lazy var isSandboxed: Bool = {
         var code: SecCode?
+        var staticCode: SecStaticCode?
         var info: CFDictionary?
         guard SecCodeCopySelf([], &code) == noErr,
-            SecCodeCopySigningInformation(code as! SecStaticCode, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == noErr,
+            SecCodeCopyStaticCode(code!, [], &staticCode) == noErr,
+            SecCodeCopySigningInformation(staticCode!, SecCSFlags(rawValue: kSecCSSigningInformation), &info) == noErr,
             let info = info as? [CFString: Any],
             let entitlements = info[kSecCodeInfoEntitlementsDict] as? [CFString: Any]
         else { return false }

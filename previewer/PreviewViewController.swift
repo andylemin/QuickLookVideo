@@ -17,6 +17,8 @@ let kDefaultSnapshotTime = 60
 let kMinimumDuration = 5  // Don't bother seeking clips shorter than this [s].
 let kDefaultSnapshotCount = 10
 let kMinimumPeriod = 60  // Don't create snapshots spaced more closely than this [s].
+let kSeekStep = 10  // Left/Right arrow seek in interactive previews [s].
+let kSeekStepLarge = 60  // Shift + Left/Right arrow seek in interactive previews [s].
 
 let kWindowWidthThreshhold: CGFloat = 600  // Finder Column view max width = 560
 let kWindowHeightThreshhold: CGFloat = 160  // Get Info height = 128, QuickLook minimum window height = 180
@@ -74,6 +76,7 @@ class PreviewViewController: NSViewController, QLPreviewingController, NSCollect
     var timer: Timer? = nil
     var webViewVideoIsStopped: Bool = false
     private var webViewLoaded: Bool = false
+    private var interactive: Bool = false
 
     @IBOutlet weak var sidebar: NSScrollView!
     @IBOutlet weak var sidebarCollection: NSCollectionView!
@@ -150,6 +153,41 @@ class PreviewViewController: NSViewController, QLPreviewingController, NSCollect
         return nil
     }
 
+    // Interactive previews (the Quick Look panel) autoplay and seek with the arrow keys. Compact previews embedded in
+    // Finder windows must not, or they would steal Finder's own arrow key navigation.
+    func loadVideoPreview(url: URL, mimeType: String, size: CGSize, interactive: Bool) {
+        self.interactive = interactive
+        let src = url.lastPathComponent.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? url.lastPathComponent
+        let script =
+            interactive
+            ? """
+                <script>
+                    document.addEventListener('keydown', (e) => {
+                        if (e.repeat || e.metaKey || e.altKey || e.ctrlKey) return;
+                        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+                        const step = e.shiftKey ? \(kSeekStepLarge) : \(kSeekStep);
+                        document.querySelector('video').currentTime += e.key === 'ArrowLeft' ? -step : step;
+                        e.preventDefault();
+                    });
+                </script>
+            """ : ""
+        setupPreview(.webView)
+        webView.loadFileURL(url, allowingReadAccessTo: url)
+        webView.loadHTMLString(
+            """
+            <html>
+            <meta name="viewport" content="width=\(size.width), height=\(size.height)" />
+            <body style="background-color:black;margin:0;padding:0;">
+                <video controls\(interactive ? " autoplay" : "") width="\(size.width)" height="\(size.height)">
+                    <source src="\(src)" type="\(mimeType)" />
+                </video>
+            \(script)</body>
+            </html>
+            """,
+            baseURL: url.deletingLastPathComponent()
+        )
+    }
+
     func preparePreviewOfSearchableItem(identifier: String, queryString: String?) async throws {
         // Implement this method and set QLSupportsSearchableItems to YES in the Info.plist of the extension if you support CoreSpotlight.
         #if DEBUG
@@ -202,20 +240,7 @@ class PreviewViewController: NSViewController, QLPreviewingController, NSCollect
             if let mimeType = webViewSupports(ext: url.pathExtension, codec: snapshotter.videoCodec) {
                 // Fit to width
                 let size = NSSize(width: view.frame.width, height: view.frame.width * snapshotSize.height / snapshotSize.width)
-                setupPreview(.webView)
-                webView.loadFileURL(url, allowingReadAccessTo: url)
-                webView.loadHTMLString(
-                    """
-                    <html>
-                    <meta name="viewport" content="width=\(size.width), height=\(size.height)" />
-                    <body style="background-color:black;margin:0;padding:0;">
-                        <video controls width="width=\(size.width)" height="\(size.height)">
-                            <source src="\(url.lastPathComponent)" type="\(mimeType)" />
-                    </body>
-                    </html>
-                    """,
-                    baseURL: url.deletingLastPathComponent()
-                )
+                loadVideoPreview(url: url, mimeType: mimeType, size: size, interactive: false)
                 preferredContentSize = size
                 return
             } else if let coverart = snapshotter.newCoverArt(
@@ -284,20 +309,7 @@ class PreviewViewController: NSViewController, QLPreviewingController, NSCollect
 
         // use WebView to load supported files
         if let mimeType = webViewSupports(ext: url.pathExtension, codec: snapshotter.videoCodec) {
-            setupPreview(.webView)
-            webView.loadFileURL(url, allowingReadAccessTo: url)
-            webView.loadHTMLString(
-                """
-                <html>
-                <meta name="viewport" content="width=\(snapshotSize.width), height=\(snapshotSize.height)" />
-                <body style="background-color:black;margin:0;padding:0;">
-                    <video controls autoplay width="width=\(snapshotSize.width)" height="\(snapshotSize.height)">
-                        <source src="\(url.lastPathComponent)" type="\(mimeType)" />
-                </body>
-                </html>
-                """,
-                baseURL: url.deletingLastPathComponent()
-            )
+            loadVideoPreview(url: url, mimeType: mimeType, size: snapshotSize, interactive: true)
             preferredContentSize = NSSize(width: snapshotSize.width, height: snapshotSize.height)
             timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 self?.checkVisibility()
@@ -383,6 +395,11 @@ class PreviewViewController: NSViewController, QLPreviewingController, NSCollect
             preferredContentSize = NSSize(width: snapshotSize.width + sidebar.frame.width, height: snapshotSize.height)
             sidebarCollection.reloadData()
         }
+    }
+
+    override func viewDidAppear() {
+        super.viewDidAppear()
+        if interactive { view.window?.makeFirstResponder(webView) }
     }
 
     override func viewWillDisappear() {
